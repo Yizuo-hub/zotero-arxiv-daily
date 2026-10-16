@@ -9,6 +9,7 @@ import multiprocessing
 import os
 from queue import Empty
 import re
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import time
 from time import sleep
@@ -148,6 +149,16 @@ def _parse_entry_time(struct_time: Any) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _is_fresh_submission(entry: Any, release_date) -> bool:
+    """Return whether an RSS item is a v1 submission from the release month."""
+    raw_id = (getattr(entry, "id", "") or "").removeprefix("oai:arXiv.org:")
+    match = re.fullmatch(r"(?P<year_month>\d{4})\.\d+(?P<version>v\d+)?", raw_id)
+    if match is None:
+        return False
+    version = match.group("version")
+    return match.group("year_month") == release_date.strftime("%y%m") and version in {None, "v1"}
+
+
 def _entry_to_arxiv_result(entry: Any) -> ArxivResult:
     raw_id = getattr(entry, "id", "") or ""
     paper_id = raw_id.removeprefix("oai:arXiv.org:")
@@ -257,10 +268,33 @@ class ArxivRetriever(BaseRetriever):
             )
 
         allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
-        target_entries = [
+        announced_entries = [
             i for i in feed.entries
             if i.get("arxiv_announce_type", "new") in allowed_announce_types
         ]
+        dated_entries = [
+            (entry, _parse_entry_time(getattr(entry, "published_parsed", None)))
+            for entry in announced_entries
+        ]
+        dated_entries = [
+            (entry, published)
+            for entry, published in dated_entries
+            if published != datetime.min.replace(tzinfo=timezone.utc)
+        ]
+        if not dated_entries:
+            raise RuntimeError(f"No arxiv entries with a valid publication date in {rss_url}")
+
+        latest_release_date = max(published.date() for _, published in dated_entries)
+        target_entries = [
+            entry
+            for entry, published in dated_entries
+            if published.date() == latest_release_date
+            and _is_fresh_submission(entry, latest_release_date)
+        ]
+        logger.info(
+            f"Selected {len(target_entries)} fresh arxiv submissions from release {latest_release_date} "
+            f"out of {len(feed.entries)} RSS entries"
+        )
         if self.config.executor.debug:
             target_entries = target_entries[:10]
 
@@ -282,11 +316,6 @@ class ArxivRetriever(BaseRetriever):
         authors = [a.name for a in raw_paper.authors]
         abstract = raw_paper.summary
         pdf_url = raw_paper.pdf_url
-        full_text = extract_text_from_tar(raw_paper)
-        if full_text is None:
-            full_text = extract_text_from_html(raw_paper)
-        if full_text is None:
-            full_text = extract_text_from_pdf(raw_paper)
         return Paper(
             source=self.name,
             title=title,
@@ -294,8 +323,22 @@ class ArxivRetriever(BaseRetriever):
             abstract=abstract,
             url=raw_paper.entry_id,
             pdf_url=pdf_url,
-            full_text=full_text,
         )
+
+    def enrich_paper(self, paper: Paper) -> Paper:
+        paper_id = paper.url.rstrip("/").rsplit("/", 1)[-1]
+        raw_paper = SimpleNamespace(
+            title=paper.title,
+            entry_id=paper.url,
+            pdf_url=paper.pdf_url,
+            source_url=lambda: f"https://arxiv.org/src/{paper_id}",
+        )
+        paper.full_text = extract_text_from_tar(raw_paper)
+        if paper.full_text is None:
+            paper.full_text = extract_text_from_html(raw_paper)
+        if paper.full_text is None:
+            paper.full_text = extract_text_from_pdf(raw_paper)
+        return paper
 
 
 def extract_text_from_html(paper: ArxivResult) -> str | None:

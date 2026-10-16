@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import feedparser
 
-from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
+from zotero_arxiv_daily.retriever.arxiv_retriever import (
+    ArxivRetriever,
+    _is_fresh_submission,
+    _run_with_hard_timeout,
+)
 import zotero_arxiv_daily.retriever.arxiv_retriever as arxiv_retriever
 
 
@@ -133,6 +137,16 @@ def test_parse_entry_time():
     assert arxiv_retriever._parse_entry_time(None) == datetime.min.replace(tzinfo=timezone.utc)
 
 
+def test_is_fresh_submission_matches_release_month_and_v1():
+    from datetime import date
+
+    release_date = date(2026, 10, 16)
+    assert _is_fresh_submission(SimpleNamespace(id="oai:arXiv.org:2610.12345v1"), release_date)
+    assert not _is_fresh_submission(SimpleNamespace(id="oai:arXiv.org:2604.12345v1"), release_date)
+    assert not _is_fresh_submission(SimpleNamespace(id="oai:arXiv.org:2610.12345v2"), release_date)
+    assert not _is_fresh_submission(SimpleNamespace(id="invalid"), release_date)
+
+
 def test_extract_authors():
     entry_with_author = SimpleNamespace(author="Alice, Bob, Charlie")
     authors = arxiv_retriever._extract_authors(entry_with_author)
@@ -229,6 +243,61 @@ def test_retrieve_raw_papers_debug_mode(config, mock_feedparser, monkeypatch):
     retriever = ArxivRetriever(config)
     raw = retriever._retrieve_raw_papers()
     assert len(raw) <= 10
+
+
+def test_retrieve_raw_papers_keeps_latest_release_fresh_submissions(config, monkeypatch):
+    def entry(paper_id, published, announce_type="new"):
+        return feedparser.FeedParserDict({
+            "id": f"oai:arXiv.org:{paper_id}",
+            "title": paper_id,
+            "author": "Author",
+            "summary": "Abstract",
+            "link": f"https://arxiv.org/abs/{paper_id.removesuffix('v1')}",
+            "published_parsed": time.strptime(published, "%Y-%m-%d"),
+            "updated_parsed": time.strptime(published, "%Y-%m-%d"),
+            "arxiv_announce_type": announce_type,
+        })
+
+    feed = SimpleNamespace(
+        status=200,
+        bozo=False,
+        feed=SimpleNamespace(title="test feed"),
+        entries=[
+            entry("2610.10001v1", "2026-10-16"),
+            entry("2604.10002v1", "2026-10-16"),
+            entry("2610.10003v2", "2026-10-16"),
+            entry("2610.10004v1", "2026-10-15"),
+            entry("2610.10005v1", "2026-10-16", "cross"),
+        ],
+    )
+    monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda _: feed)
+
+    raw = ArxivRetriever(config)._retrieve_raw_papers()
+
+    assert [paper.get_short_id() for paper in raw] == ["2610.10001"]
+
+
+def test_arxiv_full_text_is_loaded_only_when_enriched(config, monkeypatch):
+    calls = []
+    raw_paper = SimpleNamespace(
+        title="Paper",
+        authors=[SimpleNamespace(name="Author")],
+        summary="Abstract",
+        pdf_url="https://arxiv.org/pdf/2610.10001v1",
+        entry_id="https://arxiv.org/abs/2610.10001v1",
+    )
+    retriever = ArxivRetriever(config)
+    paper = retriever.convert_to_paper(raw_paper)
+    assert paper.full_text is None
+
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_tar", lambda _: calls.append("tar") or "text")
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_html", lambda _: calls.append("html"))
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_pdf", lambda _: calls.append("pdf"))
+
+    retriever.enrich_paper(paper)
+
+    assert paper.full_text == "text"
+    assert calls == ["tar"]
 
 
 def test_retrieve_raw_papers_retries_on_http_failure(config, mock_feedparser, monkeypatch):

@@ -191,6 +191,12 @@ def test_run_end_to_end(config, monkeypatch):
         "retrieve_papers",
         lambda self: retrieved,
     )
+    enriched = []
+    monkeypatch.setattr(
+        registered_retrievers["arxiv"],
+        "enrich_paper",
+        lambda self, paper: enriched.append(paper.title) or paper,
+    )
 
     # 4. Stub SMTP
     sent = []
@@ -205,6 +211,7 @@ def test_run_end_to_end(config, monkeypatch):
 
     # Assertions
     assert len(sent) == 1, "Email should have been sent"
+    assert enriched == [paper.title for paper in retrieved]
     _, _, email_body = sent[0]
     assert "text/html" in email_body
 
