@@ -282,7 +282,8 @@ class ArxivRetriever(BaseRetriever):
             if published != datetime.min.replace(tzinfo=timezone.utc)
         ]
         if not dated_entries:
-            raise RuntimeError(f"No arxiv entries with a valid publication date in {rss_url}")
+            logger.info(f"No arxiv submissions in the current RSS release from {rss_url}")
+            return []
 
         latest_release_date = max(published.date() for _, published in dated_entries)
         target_entries = [

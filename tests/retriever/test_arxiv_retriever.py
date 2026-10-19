@@ -277,6 +277,18 @@ def test_retrieve_raw_papers_keeps_latest_release_fresh_submissions(config, monk
     assert [paper.get_short_id() for paper in raw] == ["2610.10001"]
 
 
+def test_retrieve_raw_papers_returns_empty_for_valid_empty_feed(config, monkeypatch):
+    feed = SimpleNamespace(
+        status=200,
+        bozo=False,
+        feed=SimpleNamespace(title="cs.AI updates on arXiv.org"),
+        entries=[],
+    )
+    monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda _: feed)
+
+    assert ArxivRetriever(config)._retrieve_raw_papers() == []
+
+
 def test_arxiv_full_text_is_loaded_only_when_enriched(config, monkeypatch):
     calls = []
     raw_paper = SimpleNamespace(
