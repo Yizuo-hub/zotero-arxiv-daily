@@ -2,9 +2,8 @@ name: Send emails daily
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron uses UTC. 05:17 UTC is 13:17 in Asia/Shanghai, after the
-    # arXiv RSS release at roughly 12:00. Avoid the top of the hour as well.
-    - cron: '17 5 * * 1-5'
+    # GitHub cron uses UTC. 01:30 UTC is 09:30 in Asia/Shanghai.
+    - cron: '30 1 * * 1-5'
 
 jobs:
   calculate-and-send:
